@@ -24,7 +24,7 @@ pub enum RibbonEvent {
     SaveProject,
     Undo,
     Redo,
-    ToggleLang,
+    OpenSettings,
 }
 
 /// Fields the ribbon mutates in place, plus read-only flags.
@@ -61,14 +61,10 @@ enum Icon {
     Line,
     Rect,
     Ellipse,
+    Settings,
 }
 
-pub fn show(
-    ui: &mut egui::Ui,
-    l10n: &L10n,
-    state: &mut RibbonState<'_>,
-    lang_is_pt: bool,
-) -> Vec<RibbonEvent> {
+pub fn show(ui: &mut egui::Ui, l10n: &L10n, state: &mut RibbonState<'_>) -> Vec<RibbonEvent> {
     let mut events = Vec::new();
 
     ui.horizontal(|ui| {
@@ -209,13 +205,9 @@ pub fn show(
 
         vseparator(ui);
 
-        group(ui, l10n.language, |ui| {
-            let pt_clicked = ui.selectable_label(lang_is_pt, "Português").clicked();
-            let en_clicked = ui.selectable_label(!lang_is_pt, "English").clicked();
-            if pt_clicked && !lang_is_pt || en_clicked && lang_is_pt {
-                events.push(RibbonEvent::ToggleLang);
-            }
-        });
+        if icon_button(ui, l10n.settings, Icon::Settings, false, 40.0) {
+            events.push(RibbonEvent::OpenSettings);
+        }
 
         ui.add_space(8.0);
     });
@@ -418,6 +410,7 @@ fn paint_icon(ui: &egui::Ui, rect: Rect, tint: Color32, icon: Icon) {
         Icon::Line => egui::include_image!("../assets/icons/line.svg"),
         Icon::Rect => egui::include_image!("../assets/icons/rectangle.svg"),
         Icon::Ellipse => egui::include_image!("../assets/icons/circle.svg"),
+        Icon::Settings => egui::include_image!("../assets/icons/settings.svg"),
     };
     let side = rect.size().min_elem() * 0.68;
     let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(side));

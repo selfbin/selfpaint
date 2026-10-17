@@ -7,13 +7,6 @@ pub enum Lang {
 }
 
 impl Lang {
-    pub fn next(self) -> Self {
-        match self {
-            Lang::Pt => Lang::En,
-            Lang::En => Lang::Pt,
-        }
-    }
-
     pub fn code(self) -> &'static str {
         match self {
             Lang::Pt => "pt",
@@ -74,6 +67,12 @@ pub struct L10n {
     pub untitled: &'static str,
     pub undo: &'static str,
     pub redo: &'static str,
+    pub settings: &'static str,
+    pub settings_title: &'static str,
+    pub splash_name: &'static str,
+    pub splash_desc: &'static str,
+    pub splash_start: &'static str,
+    pub splash_hint: &'static str,
 }
 
 impl L10n {
@@ -122,6 +121,12 @@ impl L10n {
                 untitled: "Sem título",
                 undo: "Desfazer (Ctrl+Z)",
                 redo: "Refazer (Ctrl+Y)",
+                settings: "Definições",
+                settings_title: "Definições",
+                splash_name: "Self Paint",
+                splash_desc: "Um app Baseado no mspaint. Refeito em rust.",
+                splash_start: "Começar a pintar",
+                splash_hint: "Clique em qualquer lado para fechar",
             },
             Lang::En => Self {
                 new_file: "New",
@@ -166,6 +171,12 @@ impl L10n {
                 untitled: "Untitled",
                 undo: "Undo (Ctrl+Z)",
                 redo: "Redo (Ctrl+Y)",
+                settings: "Settings",
+                settings_title: "Settings",
+                splash_name: "Self Paint",
+                splash_desc: "An app based on MS Paint. Rewritten in Rust.",
+                splash_start: "Start painting",
+                splash_hint: "Click anywhere to close",
             },
         }
     }

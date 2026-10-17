@@ -15,7 +15,9 @@ use crate::document::Document;
 use crate::fonts::{self, FontCatalog};
 use crate::history::History;
 use crate::i18n::{L10n, Lang};
-use crate::palette::{ACCENT, BORDER, CANVAS_BG, CHROME_BG, STATUS_BG, TEXT, TEXT_MUTED};
+use crate::palette::{
+    ACCENT, ACCENT_HOVER, BORDER, CANVAS_BG, CHROME_BG, STATUS_BG, TEXT, TEXT_MUTED,
+};
 use crate::project::{self, ProjectMeta};
 use crate::ribbon::{ActiveColor, RibbonEvent, RibbonState};
 use crate::settings::Prefs;
@@ -87,6 +89,8 @@ pub struct SelfPaintApp {
     show_new_dialog: bool,
     new_w: u32,
     new_h: u32,
+    show_settings: bool,
+    show_splash: bool,
     fonts: FontCatalog,
     text_size: f32,
     text_font: usize,
@@ -134,6 +138,8 @@ impl SelfPaintApp {
             show_new_dialog: false,
             new_w: DEFAULT_DOC_W,
             new_h: DEFAULT_DOC_H,
+            show_settings: false,
+            show_splash: true,
             fonts,
             text_size: prefs.tools.text_size.clamp(8, 256) as f32,
             text_font,
@@ -989,6 +995,117 @@ impl SelfPaintApp {
             self.status(format!("{} × {} px", self.new_w, self.new_h));
         }
     }
+
+    // -------------------------------------------------------- settings dialog
+
+    fn show_settings_dialog(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_settings;
+        egui::Window::new(self.l10n.settings_title)
+            .id(egui::Id::new("selfpaint-settings"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(self.l10n.language)
+                        .size(13.0)
+                        .color(TEXT_MUTED),
+                );
+                ui.horizontal(|ui| {
+                    let pt = ui.selectable_label(self.lang == Lang::Pt, "Português");
+                    let en = ui.selectable_label(self.lang == Lang::En, "English");
+                    if pt.clicked() && self.lang != Lang::Pt {
+                        self.lang = Lang::Pt;
+                        self.l10n = L10n::of(Lang::Pt);
+                        self.persist(|p| p.general.language = "pt".into());
+                    }
+                    if en.clicked() && self.lang != Lang::En {
+                        self.lang = Lang::En;
+                        self.l10n = L10n::of(Lang::En);
+                        self.persist(|p| p.general.language = "en".into());
+                    }
+                });
+            });
+        self.show_settings = open;
+    }
+
+    // ------------------------------------------------------------ splash screen
+
+    fn show_splash_screen(&mut self, ui: &mut egui::Ui) {
+        let rect = ui.max_rect();
+        let (splash_rect, response) = ui.allocate_exact_size(rect.size(), Sense::click());
+        let painter = ui.painter_at(splash_rect);
+
+        // Dim the app behind the splash.
+        painter.rect_filled(splash_rect, 0.0, Color32::from_black_alpha(180));
+
+        let center = splash_rect.center();
+        let name = self.l10n.splash_name;
+        let desc = self.l10n.splash_desc;
+        let hint = self.l10n.splash_hint;
+        let start = self.l10n.splash_start;
+
+        // App name.
+        painter.text(
+            center - Vec2::new(0.0, 60.0),
+            egui::Align2::CENTER_CENTER,
+            name,
+            FontId::proportional(52.0),
+            TEXT,
+        );
+        // Description.
+        painter.text(
+            center - Vec2::new(0.0, 10.0),
+            egui::Align2::CENTER_CENTER,
+            desc,
+            FontId::proportional(16.0),
+            TEXT_MUTED,
+        );
+
+        // "Start painting" button.
+        let btn_size = Vec2::new(200.0, 36.0);
+        let btn_rect = Rect::from_center_size(center + Vec2::new(0.0, 50.0), btn_size);
+        let btn_id = ui.id().with("selfpaint-splash-start");
+        let btn_resp = ui.interact(btn_rect, btn_id, Sense::click());
+        let btn_fill = if btn_resp.hovered() {
+            ACCENT_HOVER
+        } else {
+            ACCENT
+        };
+        painter.rect_filled(btn_rect, 6.0, btn_fill);
+        painter.text(
+            btn_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            start,
+            FontId::proportional(15.0),
+            Color32::WHITE,
+        );
+
+        // Hint at the bottom.
+        painter.text(
+            center + Vec2::new(0.0, 110.0),
+            egui::Align2::CENTER_CENTER,
+            hint,
+            FontId::proportional(12.0),
+            Color32::from_white_alpha(140),
+        );
+
+        // Any click (on the background or the button) dismisses the splash.
+        if btn_resp.clicked()
+            || (response.clicked()
+                && !btn_rect.contains(
+                    response
+                        .interact_pointer_pos()
+                        .unwrap_or(Pos2::new(-1.0, -1.0)),
+                ))
+        {
+            self.show_splash = false;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Space)) {
+            self.show_splash = false;
+        }
+    }
 }
 
 impl eframe::App for SelfPaintApp {
@@ -1006,7 +1123,6 @@ impl eframe::App for SelfPaintApp {
         }
 
         let l10n = self.l10n.clone();
-        let lang_is_pt = self.lang == Lang::Pt;
         let mut events = Vec::new();
         {
             let mut ribbon_state = RibbonState {
@@ -1031,7 +1147,7 @@ impl eframe::App for SelfPaintApp {
                         .inner_margin(egui::Margin::symmetric(4, 6)),
                 )
                 .show(ui, |ui| {
-                    events = crate::ribbon::show(ui, &l10n, &mut ribbon_state, lang_is_pt);
+                    events = crate::ribbon::show(ui, &l10n, &mut ribbon_state);
                 });
             ui.painter().hline(
                 ribbon.response.rect.x_range(),
@@ -1080,10 +1196,7 @@ impl eframe::App for SelfPaintApp {
                 RibbonEvent::SaveProject => self.spawn_save_project(),
                 RibbonEvent::Undo => self.undo(),
                 RibbonEvent::Redo => self.redo(),
-                RibbonEvent::ToggleLang => {
-                    self.lang = self.lang.next();
-                    self.l10n = L10n::of(self.lang);
-                }
+                RibbonEvent::OpenSettings => self.show_settings = true,
             }
         }
 
@@ -1096,6 +1209,11 @@ impl eframe::App for SelfPaintApp {
             });
 
         self.show_new_dialog(ui.ctx());
+        self.show_settings_dialog(ui.ctx());
+
+        if self.show_splash {
+            self.show_splash_screen(ui);
+        }
 
         if let Some((_, t)) = &self.status
             && t.elapsed() > STATUS_TTL
