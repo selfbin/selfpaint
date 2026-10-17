@@ -43,6 +43,16 @@ cargo test
 | `src/palette.rs` | Default palette + Win11 light theme tokens |
 | `src/i18n.rs` | PT/EN strings |
 | `src/settings.rs` | Persistent preferences (craft-settings) |
+| `src/fonts.rs` | Font catalog: embedded + system TTF/OTF discovery |
+| `assets/icons/` | Ribbon SVGs (Tabler Icons) |
+| `assets/fonts/` | Embedded typefaces for the text tool |
+
+## Credits
+
+- **[Tabler Icons](https://tabler.io/icons)** — ribbon icons, MIT License
+- **[Open Sans](https://fonts.google.com/specimen/Open+Sans)** (Steve Matteson) — SIL Open Font License 1.1
+- **[JetBrains Mono](https://www.jetbrains.com/mono/)** (Philipp Nurullin et al.) — SIL Open Font License 1.1
+- **[Pacifico](https://fonts.google.com/specimen/Pacifico)** (Vernon Adams) — SIL Open Font License 1.1
 
 ## License
 

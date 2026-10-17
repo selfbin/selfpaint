@@ -22,6 +22,14 @@ pub struct ProjectMeta {
     pub filled_shapes: bool,
     #[serde(default = "default_zoom")]
     pub zoom: f32,
+    #[serde(default = "default_text_size")]
+    pub text_size: u16,
+    #[serde(default = "default_text_font")]
+    pub text_font: String,
+    #[serde(default)]
+    pub text_bold: bool,
+    #[serde(default)]
+    pub text_italic: bool,
 }
 
 fn default_stroke() -> u8 {
@@ -30,6 +38,14 @@ fn default_stroke() -> u8 {
 
 fn default_zoom() -> f32 {
     1.0
+}
+
+fn default_text_size() -> u16 {
+    32
+}
+
+fn default_text_font() -> String {
+    "Open Sans".into()
 }
 
 #[derive(Debug)]
@@ -126,6 +142,10 @@ mod tests {
             active_color: 2,
             filled_shapes: true,
             zoom: 2.5,
+            text_size: 48,
+            text_font: "Pacifico".into(),
+            text_bold: true,
+            text_italic: false,
         };
         let bytes = encode(&pixels, &meta).unwrap();
         assert!(is_project(&bytes));

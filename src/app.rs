@@ -12,6 +12,7 @@ use egui::{
 
 use crate::canvas::{self, CanvasView};
 use crate::document::Document;
+use crate::fonts::{self, FontCatalog};
 use crate::history::History;
 use crate::i18n::{L10n, Lang};
 use crate::palette::{ACCENT, BORDER, CANVAS_BG, CHROME_BG, STATUS_BG, TEXT, TEXT_MUTED};
@@ -86,7 +87,12 @@ pub struct SelfPaintApp {
     show_new_dialog: bool,
     new_w: u32,
     new_h: u32,
-    font: Option<fontdue::Font>,
+    fonts: FontCatalog,
+    text_size: f32,
+    text_font: usize,
+    text_bold: bool,
+    text_italic: bool,
+    preview_font_key: Option<(String, fonts::FontStyle)>,
 }
 
 impl SelfPaintApp {
@@ -96,6 +102,8 @@ impl SelfPaintApp {
         let lang = Lang::from_code(&prefs.general.language);
         let mut view = CanvasView::default();
         view.set_zoom(prefs.view.zoom);
+        let fonts = FontCatalog::new();
+        let text_font = fonts.family_index(&prefs.tools.text_font);
         Self {
             doc: Document::new(DEFAULT_DOC_W, DEFAULT_DOC_H),
             history: History::default(),
@@ -126,7 +134,12 @@ impl SelfPaintApp {
             show_new_dialog: false,
             new_w: DEFAULT_DOC_W,
             new_h: DEFAULT_DOC_H,
-            font: None,
+            fonts,
+            text_size: prefs.tools.text_size.clamp(8, 256) as f32,
+            text_font,
+            text_bold: prefs.tools.text_bold,
+            text_italic: prefs.tools.text_italic,
+            preview_font_key: None,
         }
     }
 
@@ -298,7 +311,17 @@ impl SelfPaintApp {
             },
             filled_shapes: self.filled_shapes,
             zoom: self.view.zoom,
+            text_size: self.text_size.clamp(8.0, 256.0) as u16,
+            text_font: self.text_font_name().to_owned(),
+            text_bold: self.text_bold,
+            text_italic: self.text_italic,
         }
+    }
+
+    fn text_font_name(&self) -> &str {
+        self.fonts
+            .family_name(self.text_font)
+            .unwrap_or("Open Sans")
     }
 
     fn remember_dir(&mut self, path: &std::path::Path) {
@@ -371,6 +394,11 @@ impl SelfPaintApp {
         self.active_color = active_from_index(meta.active_color);
         self.filled_shapes = meta.filled_shapes;
         self.view.set_zoom(meta.zoom);
+        self.text_size = (meta.text_size as f32).clamp(8.0, 256.0);
+        self.text_font = self.fonts.family_index(&meta.text_font);
+        self.text_bold = meta.text_bold;
+        self.text_italic = meta.text_italic;
+        self.preview_font_key = None;
         let lang = self.lang.code();
         let tool = self.tool.as_str();
         let stroke = self.stroke;
@@ -382,6 +410,10 @@ impl SelfPaintApp {
         };
         let filled = self.filled_shapes;
         let zoom = self.view.zoom;
+        let text_size = self.text_size.clamp(8.0, 256.0) as u16;
+        let text_font = self.text_font_name().to_owned();
+        let text_bold = self.text_bold;
+        let text_italic = self.text_italic;
         self.persist(move |p| {
             p.general.language = lang.into();
             p.tools.tool = tool.into();
@@ -391,6 +423,10 @@ impl SelfPaintApp {
             p.tools.active_color = active;
             p.tools.filled_shapes = filled;
             p.view.zoom = zoom;
+            p.tools.text_size = text_size;
+            p.tools.text_font = text_font;
+            p.tools.text_bold = text_bold;
+            p.tools.text_italic = text_italic;
         });
     }
 
@@ -441,27 +477,31 @@ impl SelfPaintApp {
         self.texture_dirty = false;
     }
 
-    fn ensure_font(&mut self, ctx: &egui::Context) {
-        if self.font.is_some() {
+    /// Register the selected family/style into egui under `FontFamily::Name`
+    /// so the live TextEdit preview matches what gets rasterized onto the canvas.
+    fn sync_preview_font(&mut self, ctx: &egui::Context) {
+        let Some(name) = self.fonts.family_name(self.text_font).map(str::to_owned) else {
+            return;
+        };
+        let style = fonts::style_from_flags(self.text_bold, self.text_italic);
+        if self.preview_font_key.as_ref() == Some(&(name.clone(), style)) {
             return;
         }
-        let bytes = ctx.fonts(|fonts| {
-            let defs = fonts.definitions();
-            let mut fallback: Option<Vec<u8>> = None;
-            for (name, data) in &defs.font_data {
-                let bytes = match &data.font {
-                    std::borrow::Cow::Borrowed(b) => b.to_vec(),
-                    std::borrow::Cow::Owned(b) => b.clone(),
-                };
-                if name.contains("Hack") {
-                    return Some(bytes);
-                }
-                fallback.get_or_insert(bytes);
-            }
-            fallback
-        });
-        self.font =
-            bytes.and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok());
+        let Some(bytes) = self.fonts.bytes(&name, style) else {
+            return;
+        };
+        let mut defs = ctx.fonts(|f| f.definitions().clone());
+        defs.font_data.remove("selfpaint-preview");
+        defs.font_data.insert(
+            "selfpaint-preview".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes.as_ref().to_vec())),
+        );
+        defs.families.insert(
+            egui::FontFamily::Name("SelfPaint/Text".into()),
+            vec!["selfpaint-preview".to_owned()],
+        );
+        ctx.set_fonts(defs);
+        self.preview_font_key = Some((name, style));
     }
 
     fn brush_radius(&self) -> f32 {
@@ -485,7 +525,7 @@ impl SelfPaintApp {
     fn show_canvas(&mut self, ui: &mut egui::Ui) {
         self.ensure_texture(ui.ctx());
         if self.tool == Tool::Text {
-            self.ensure_font(ui.ctx());
+            self.sync_preview_font(ui.ctx());
         }
 
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
@@ -767,7 +807,10 @@ impl SelfPaintApp {
                         ui.set_min_size(Vec2::new(320.0, 90.0));
                         let response = ui.add(
                             egui::TextEdit::multiline(&mut self.text.draft)
-                                .font(FontId::proportional(16.0))
+                                .font(FontId::new(
+                                    self.text_size.clamp(8.0, 256.0),
+                                    egui::FontFamily::Name("SelfPaint/Text".into()),
+                                ))
                                 .desired_width(300.0)
                                 .desired_rows(3)
                                 .hint_text(self.l10n.text_hint),
@@ -806,10 +849,14 @@ impl SelfPaintApp {
         if text.is_empty() {
             return;
         }
-        let size = self.stroke.clamp(8.0, 96.0);
+        let size = self.text_size.clamp(8.0, 256.0);
         let color = color32_to_rgba(self.color1);
-        let Some(font) = &self.font else { return };
-        let Some((buffer, w, h)) = rasterize_text(font, text, size, color) else {
+        let family = self.text_font_name().to_owned();
+        let style = fonts::style_from_flags(self.text_bold, self.text_italic);
+        let Some(font) = self.fonts.load(&family, style) else {
+            return;
+        };
+        let Some((buffer, w, h)) = rasterize_text(&font, text, size, color) else {
             return;
         };
         let before = self.doc.pixels.clone();
@@ -971,6 +1018,11 @@ impl eframe::App for SelfPaintApp {
                 filled: &mut self.filled_shapes,
                 can_undo: self.history.can_undo(),
                 can_redo: self.history.can_redo(),
+                text_size: &mut self.text_size,
+                text_font: &mut self.text_font,
+                font_names: self.fonts.families(),
+                text_bold: &mut self.text_bold,
+                text_italic: &mut self.text_italic,
             };
             let ribbon = egui::Panel::top("selfpaint-ribbon")
                 .frame(
@@ -1000,6 +1052,10 @@ impl eframe::App for SelfPaintApp {
             let filled = self.filled_shapes;
             let lang = self.lang.code();
             let zoom = self.view.zoom;
+            let text_size = self.text_size.clamp(8.0, 256.0) as u16;
+            let text_font = self.text_font_name().to_owned();
+            let text_bold = self.text_bold;
+            let text_italic = self.text_italic;
             self.persist(move |p| {
                 p.tools.tool = tool.into();
                 p.tools.stroke = stroke;
@@ -1009,6 +1065,10 @@ impl eframe::App for SelfPaintApp {
                 p.tools.filled_shapes = filled;
                 p.general.language = lang.into();
                 p.view.zoom = zoom;
+                p.tools.text_size = text_size;
+                p.tools.text_font = text_font;
+                p.tools.text_bold = text_bold;
+                p.tools.text_italic = text_italic;
             });
         }
 

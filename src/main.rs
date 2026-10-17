@@ -3,6 +3,7 @@
 mod app;
 mod canvas;
 mod document;
+mod fonts;
 mod history;
 mod i18n;
 mod palette;

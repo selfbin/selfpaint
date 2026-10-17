@@ -35,6 +35,10 @@ pub struct ToolsPrefs {
     pub active_color: u8,
     pub filled_shapes: bool,
     pub last_dir: String,
+    pub text_size: u16,
+    pub text_font: String,
+    pub text_bold: bool,
+    pub text_italic: bool,
 }
 
 impl Default for ToolsPrefs {
@@ -47,6 +51,10 @@ impl Default for ToolsPrefs {
             active_color: 1,
             filled_shapes: false,
             last_dir: String::new(),
+            text_size: 32,
+            text_font: "Open Sans".into(),
+            text_bold: false,
+            text_italic: false,
         }
     }
 }

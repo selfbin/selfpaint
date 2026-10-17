@@ -1,7 +1,7 @@
-//! The top ribbon: file actions, tools, shapes, stroke size and colors.
+//! The top ribbon: file actions, tools, shapes, font/text size and colors.
 
 use craft_ui::buttons::{ButtonVisuals, IconButton, IconButtonStyle};
-use egui::{Color32, CornerRadius, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use egui::{Color32, CornerRadius, Rect, RichText, Sense, Stroke, Vec2};
 
 use crate::i18n::L10n;
 use crate::palette::{
@@ -37,6 +37,11 @@ pub struct RibbonState<'a> {
     pub filled: &'a mut bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    pub text_size: &'a mut f32,
+    pub text_font: &'a mut usize,
+    pub font_names: &'a [String],
+    pub text_bold: &'a mut bool,
+    pub text_italic: &'a mut bool,
 }
 
 #[derive(Clone, Copy)]
@@ -136,7 +141,30 @@ pub fn show(
 
         vseparator(ui);
 
-        let size_label = if *state.tool == Tool::Text {
+        if *state.tool == Tool::Text {
+            group(ui, l10n.font_group, |ui| {
+                let mut idx = *state.text_font;
+                egui::ComboBox::from_id_salt("selfpaint-font-family")
+                    .selected_text(state.font_names.get(idx).map(|s| s.as_str()).unwrap_or("—"))
+                    .width(170.0)
+                    .show_ui(ui, |ui| {
+                        for (i, name) in state.font_names.iter().enumerate() {
+                            ui.selectable_value(&mut idx, i, name);
+                        }
+                    });
+                *state.text_font = idx;
+                ui.add_space(4.0);
+                ui.toggle_value(&mut *state.text_bold, RichText::new("B").strong())
+                    .on_hover_text(l10n.bold);
+                ui.toggle_value(&mut *state.text_italic, RichText::new("I").italics())
+                    .on_hover_text(l10n.italic);
+            });
+
+            vseparator(ui);
+        }
+
+        let is_text = *state.tool == Tool::Text;
+        let size_label = if is_text {
             l10n.text_size_group
         } else {
             l10n.size_group
@@ -144,17 +172,31 @@ pub fn show(
         group(ui, size_label, |ui| {
             ui.add_space(2.0);
             ui.spacing_mut().slider_width = 110.0;
-            ui.add(egui::Slider::new(state.stroke, 1.0..=64.0).fixed_decimals(0));
+            if is_text {
+                ui.add(egui::Slider::new(state.text_size, 8.0..=256.0).fixed_decimals(0));
+            } else {
+                ui.add(egui::Slider::new(state.stroke, 1.0..=64.0).fixed_decimals(0));
+            }
             ui.add_space(2.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
             let color = match state.active_color {
                 ActiveColor::One => *state.color1,
                 ActiveColor::Two => *state.color2,
             };
-            let r = (*state.stroke * 0.5).clamp(1.0, 10.0);
-            ui.painter().circle_filled(rect.center(), r, color);
-            ui.painter()
-                .circle_stroke(rect.center(), r, Stroke::new(1.0, TEXT_MUTED));
+            if is_text {
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "A",
+                    egui::FontId::proportional(16.0),
+                    color,
+                );
+            } else {
+                let r = (*state.stroke * 0.5).clamp(1.0, 10.0);
+                ui.painter().circle_filled(rect.center(), r, color);
+                ui.painter()
+                    .circle_stroke(rect.center(), r, Stroke::new(1.0, TEXT_MUTED));
+            }
         });
 
         vseparator(ui);
@@ -233,7 +275,7 @@ fn icon_button(ui: &mut egui::Ui, label: &str, icon: Icon, selected: bool, size:
     IconButton::new(label, Vec2::splat(size), &style)
         .selected(selected)
         .show(ui, |ui, rect, tint| {
-            paint_glyph(ui.painter(), rect, tint, icon)
+            paint_icon(ui, rect, tint, icon);
         })
         .on_hover_text(label)
         .clicked()
@@ -358,179 +400,26 @@ fn palette_grid(
     }
 }
 
-/// Paint a simple monochrome glyph inside a button rect.
-fn paint_glyph(painter: &egui::Painter, rect: Rect, tint: Color32, icon: Icon) {
-    let c = rect.center();
-    let s = rect.size().min_elem() * 0.30;
-    let stroke = Stroke::new(1.7, tint);
-    let thin = Stroke::new(1.3, tint);
-
-    match icon {
-        Icon::New => {
-            let page = Rect::from_center_size(c, Vec2::new(s * 1.2, s * 1.5));
-            painter.rect_stroke(page, 2.0, thin, egui::StrokeKind::Middle);
-            painter.line_segment(
-                [c + Vec2::new(-s * 0.4, 0.0), c + Vec2::new(s * 0.4, 0.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [c + Vec2::new(0.0, -s * 0.4), c + Vec2::new(0.0, s * 0.4)],
-                stroke,
-            );
-        }
-        Icon::Open => {
-            let back =
-                Rect::from_min_size(c + Vec2::new(-s, -s * 0.4), Vec2::new(s * 2.0, s * 1.1));
-            painter.rect_stroke(back, 1.0, thin, egui::StrokeKind::Middle);
-            let front =
-                Rect::from_min_size(c + Vec2::new(-s, -s * 0.05), Vec2::new(s * 2.0, s * 1.0));
-            painter.rect_filled(front, 1.0, tint);
-        }
-        Icon::Save => {
-            let body = Rect::from_center_size(c, Vec2::splat(s * 1.6));
-            painter.rect_stroke(body, 2.0, thin, egui::StrokeKind::Middle);
-            let label =
-                Rect::from_min_size(c + Vec2::new(-s * 0.5, -s * 0.65), Vec2::new(s, s * 0.55));
-            painter.rect_filled(label, 1.0, tint);
-            let slot = Rect::from_min_size(
-                c + Vec2::new(-s * 0.45, s * 0.15),
-                Vec2::new(s * 0.9, s * 0.5),
-            );
-            painter.rect_stroke(slot, 1.0, thin, egui::StrokeKind::Middle);
-        }
-        Icon::SaveProj => {
-            let body = Rect::from_center_size(c, Vec2::splat(s * 1.6));
-            painter.rect_stroke(body, 2.0, thin, egui::StrokeKind::Middle);
-            painter.line_segment(
-                [c + Vec2::new(0.0, -s * 0.55), c + Vec2::new(0.0, s * 0.25)],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    c + Vec2::new(-s * 0.3, -s * 0.05),
-                    c + Vec2::new(0.0, s * 0.3),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    c + Vec2::new(s * 0.3, -s * 0.05),
-                    c + Vec2::new(0.0, s * 0.3),
-                ],
-                stroke,
-            );
-        }
-        Icon::Undo | Icon::Redo => {
-            let dir = if matches!(icon, Icon::Undo) {
-                -1.0
-            } else {
-                1.0
-            };
-            let points: Vec<Pos2> = (0..=18)
-                .map(|i| {
-                    let t =
-                        std::f32::consts::PI * 0.15 + std::f32::consts::PI * 0.85 * i as f32 / 18.0;
-                    c + Vec2::new(dir * s * 1.1 * t.cos(), s * 0.9 * t.sin() * 0.9)
-                })
-                .collect();
-            for pair in points.windows(2) {
-                painter.line_segment([pair[0], pair[1]], stroke);
-            }
-            let tip = *points.last().unwrap();
-            let prev = *points.get(points.len() - 3).unwrap();
-            let dirv = (tip - prev).normalized();
-            let n = Vec2::new(-dirv.y, dirv.x);
-            painter.add(egui::Shape::convex_polygon(
-                vec![
-                    tip,
-                    tip - dirv * s * 0.45 + n * s * 0.28,
-                    tip - dirv * s * 0.45 - n * s * 0.28,
-                ],
-                tint,
-                Stroke::NONE,
-            ));
-        }
-        Icon::Pencil => {
-            let a = c + Vec2::new(-s * 0.9, s * 0.9);
-            let b = c + Vec2::new(s * 0.55, -s * 0.55);
-            painter.line_segment([a, b], stroke);
-            let tip_dir = (b - a).normalized();
-            let n = Vec2::new(-tip_dir.y, tip_dir.x);
-            painter.add(egui::Shape::convex_polygon(
-                vec![b + tip_dir * s * 0.35, b + n * s * 0.22, b - n * s * 0.22],
-                tint,
-                Stroke::NONE,
-            ));
-        }
-        Icon::Brush => {
-            let a = c + Vec2::new(-s * 0.8, s * 0.8);
-            let b = c + Vec2::new(s * 0.3, -s * 0.3);
-            painter.line_segment([a, b], stroke);
-            painter.circle_filled(c + Vec2::new(s * 0.55, -s * 0.55), s * 0.45, tint);
-        }
-        Icon::Eraser => {
-            let block =
-                Rect::from_center_size(c + Vec2::new(-s * 0.1, 0.0), Vec2::new(s * 1.2, s * 0.7));
-            painter.rect_filled(block, 2.0, tint.gamma_multiply(0.35));
-            painter.rect_stroke(block, 2.0, thin, egui::StrokeKind::Middle);
-            painter.line_segment(
-                [
-                    c + Vec2::new(s * 0.45, -s * 0.35),
-                    c + Vec2::new(s * 0.75, s * 0.35),
-                ],
-                stroke,
-            );
-        }
-        Icon::Bucket => {
-            let body = Rect::from_center_size(
-                c + Vec2::new(-s * 0.1, s * 0.15),
-                Vec2::new(s * 1.2, s * 1.0),
-            );
-            painter.rect_stroke(body, 2.0, thin, egui::StrokeKind::Middle);
-            painter.line_segment(
-                [
-                    c + Vec2::new(-s * 0.7, -s * 0.35),
-                    c + Vec2::new(-s * 0.1, -s * 0.75),
-                ],
-                stroke,
-            );
-            painter.circle_filled(c + Vec2::new(s * 0.85, s * 0.55), s * 0.28, tint);
-        }
-        Icon::Text => {
-            painter.text(
-                c,
-                egui::Align2::CENTER_CENTER,
-                "A",
-                egui::FontId::proportional(s * 2.0),
-                tint,
-            );
-        }
-        Icon::Picker => {
-            let a = c + Vec2::new(-s * 0.8, s * 0.8);
-            let b = c + Vec2::new(s * 0.4, -s * 0.4);
-            painter.line_segment([a, b], stroke);
-            painter.circle_filled(b + Vec2::new(s * 0.25, -s * 0.25), s * 0.35, tint);
-        }
-        Icon::Line => {
-            painter.line_segment(
-                [c + Vec2::new(-s, s * 0.8), c + Vec2::new(s, -s * 0.8)],
-                stroke,
-            );
-        }
-        Icon::Rect => {
-            painter.rect_stroke(
-                Rect::from_center_size(c, Vec2::new(s * 1.8, s * 1.3)),
-                1.0,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-        }
-        Icon::Ellipse => {
-            painter.add(egui::epaint::Shape::ellipse_stroke(
-                c,
-                Vec2::new(s * 0.95, s * 0.7),
-                stroke,
-            ));
-        }
-    }
+/// Paint a Tabler icon (white strokes) tinted to the requested color.
+fn paint_icon(ui: &egui::Ui, rect: Rect, tint: Color32, icon: Icon) {
+    let source = match icon {
+        Icon::New => egui::include_image!("../assets/icons/file-plus.svg"),
+        Icon::Open => egui::include_image!("../assets/icons/folder-open.svg"),
+        Icon::Save => egui::include_image!("../assets/icons/device-floppy.svg"),
+        Icon::SaveProj => egui::include_image!("../assets/icons/package.svg"),
+        Icon::Undo => egui::include_image!("../assets/icons/arrow-back-up.svg"),
+        Icon::Redo => egui::include_image!("../assets/icons/arrow-forward-up.svg"),
+        Icon::Pencil => egui::include_image!("../assets/icons/pencil.svg"),
+        Icon::Brush => egui::include_image!("../assets/icons/brush.svg"),
+        Icon::Eraser => egui::include_image!("../assets/icons/eraser.svg"),
+        Icon::Bucket => egui::include_image!("../assets/icons/droplet.svg"),
+        Icon::Text => egui::include_image!("../assets/icons/typography.svg"),
+        Icon::Picker => egui::include_image!("../assets/icons/color-picker.svg"),
+        Icon::Line => egui::include_image!("../assets/icons/line.svg"),
+        Icon::Rect => egui::include_image!("../assets/icons/rectangle.svg"),
+        Icon::Ellipse => egui::include_image!("../assets/icons/circle.svg"),
+    };
+    let side = rect.size().min_elem() * 0.68;
+    let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(side));
+    egui::Image::new(source).tint(tint).paint_at(ui, icon_rect);
 }
