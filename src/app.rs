@@ -1,9 +1,16 @@
 //! Application state, panels, canvas interaction and file jobs.
 
+#[cfg(target_arch = "wasm32")]
+use crate::time::wasm_time::InstantExt;
+#[cfg(target_arch = "wasm32")]
+use crate::time::{Duration, Instant};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
-use std::time::Instant;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 use craft_settings::{Location, SaveStatus, SettingsStore};
 use egui::{
     Color32, ColorImage, FontId, Modifiers, PointerButton, Pos2, Rect, RichText, Sense, Stroke,
@@ -12,7 +19,7 @@ use egui::{
 
 use crate::canvas::{self, CanvasView};
 use crate::document::Document;
-use crate::fonts::{self, FontCatalog};
+use crate::fonts::{FontCatalog, style_from_flags};
 use crate::history::History;
 use crate::i18n::{L10n, Lang};
 use crate::palette::{
@@ -21,11 +28,15 @@ use crate::palette::{
 use crate::project::{self, ProjectMeta};
 use crate::ribbon::{ActiveColor, RibbonEvent, RibbonState};
 use crate::settings::Prefs;
+#[cfg(target_arch = "wasm32")]
+use crate::settings::{Location, SaveStatus, SettingsStore};
 use crate::tools::{ShapePreview, Tool};
 
 const DEFAULT_DOC_W: u32 = 1920;
 const DEFAULT_DOC_H: u32 = 1200;
-const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(6);
+fn status_ttl() -> Duration {
+    Duration::from_secs(6)
+}
 
 enum DragState {
     None,
@@ -62,6 +73,7 @@ enum FileResult {
     Failed {
         message: String,
     },
+    Cancelled,
 }
 
 pub struct SelfPaintApp {
@@ -96,10 +108,21 @@ pub struct SelfPaintApp {
     text_font: usize,
     text_bold: bool,
     text_italic: bool,
-    preview_font_key: Option<(String, fonts::FontStyle)>,
+preview_font_key: Option<(String, crate::fonts::FontStyle)>,
+
+    /// egui context for accessing viewport information
+    egui_ctx: egui::Context,
 }
 
 impl SelfPaintApp {
+    pub fn apply_visuals(&self, ctx: &egui::Context) {
+        let theme = crate::palette::Theme::from_code(&self.settings.get().general.theme);
+        crate::palette::set_current(theme);
+        let mut visuals = egui::Visuals::light();
+        crate::palette::apply_theme(&mut visuals, theme);
+        ctx.set_visuals(visuals);
+    }
+
     pub fn new() -> Self {
         let (settings, _report) = SettingsStore::<Prefs>::open(Location::Auto);
         let prefs = settings.get().clone();
@@ -146,6 +169,8 @@ impl SelfPaintApp {
             text_bold: prefs.tools.text_bold,
             text_italic: prefs.tools.text_italic,
             preview_font_key: None,
+
+            egui_ctx: egui::Context::default(),
         }
     }
 
@@ -183,6 +208,7 @@ impl SelfPaintApp {
 
     // ---------------------------------------------------------------- files
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn spawn_save_png(&mut self) {
         if self.file_rx.is_some() {
             return;
@@ -207,6 +233,7 @@ impl SelfPaintApp {
                 dialog = dialog.set_directory(dir);
             }
             let Some(path) = dialog.save_file() else {
+                let _ = tx.send(FileResult::Cancelled);
                 return;
             };
             let msg = match pixels.save_with_format(&path, image::ImageFormat::Png) {
@@ -219,6 +246,12 @@ impl SelfPaintApp {
         });
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn spawn_save_png(&mut self) {
+        self.status("Saving unavailable in web build".to_string());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn spawn_save_project(&mut self) {
         if self.file_rx.is_some() {
             return;
@@ -244,6 +277,7 @@ impl SelfPaintApp {
                 dialog = dialog.set_directory(dir);
             }
             let Some(path) = dialog.save_file() else {
+                let _ = tx.send(FileResult::Cancelled);
                 return;
             };
             let msg = match project::encode(&pixels, &meta) {
@@ -261,6 +295,12 @@ impl SelfPaintApp {
         });
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn spawn_save_project(&mut self) {
+        self.status("Saving unavailable in web build".to_string());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn spawn_open(&mut self) {
         if self.file_rx.is_some() {
             return;
@@ -278,6 +318,7 @@ impl SelfPaintApp {
                 dialog = dialog.set_directory(dir);
             }
             let Some(path) = dialog.pick_file() else {
+                let _ = tx.send(FileResult::Cancelled);
                 return;
             };
             let msg = match std::fs::read(&path) {
@@ -302,6 +343,11 @@ impl SelfPaintApp {
             };
             let _ = tx.send(msg);
         });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn spawn_open(&mut self) {
+        self.status("File dialogs unavailable in web build".to_string());
     }
 
     fn project_meta(&self) -> ProjectMeta {
@@ -342,7 +388,7 @@ impl SelfPaintApp {
         let Some(rx) = self.file_rx.take() else {
             return;
         };
-        let mut done = false;
+        let mut _done = false;
         while let Ok(result) = rx.try_recv() {
             match result {
                 FileResult::SavedPng(path) => {
@@ -377,16 +423,19 @@ impl SelfPaintApp {
                 FileResult::Failed { message } => {
                     self.status(self.l10n.err_save.replace("{}", &message));
                 }
+                FileResult::Cancelled => {
+                    _done = true;
+                }
             }
-            done = true;
+            _done = true;
         }
-        if done {
+        if _done {
             self.file_rx = None;
         } else {
             self.file_rx = Some(rx);
         }
         if self.file_rx.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
 
@@ -489,7 +538,7 @@ impl SelfPaintApp {
         let Some(name) = self.fonts.family_name(self.text_font).map(str::to_owned) else {
             return;
         };
-        let style = fonts::style_from_flags(self.text_bold, self.text_italic);
+        let style = style_from_flags(self.text_bold, self.text_italic);
         if self.preview_font_key.as_ref() == Some(&(name.clone(), style)) {
             return;
         }
@@ -807,8 +856,8 @@ impl SelfPaintApp {
             .fixed_pos(anchor_screen + Vec2::new(0.0, 4.0))
             .show(ui, |ui| {
                 egui::Frame::popup(ui.style())
-                    .fill(CHROME_BG)
-                    .stroke(Stroke::new(1.0, ACCENT))
+                    .fill(CHROME_BG())
+                    .stroke(Stroke::new(1.0, ACCENT()))
                     .show(ui, |ui| {
                         ui.set_min_size(Vec2::new(320.0, 90.0));
                         let response = ui.add(
@@ -858,7 +907,7 @@ impl SelfPaintApp {
         let size = self.text_size.clamp(8.0, 256.0);
         let color = color32_to_rgba(self.color1);
         let family = self.text_font_name().to_owned();
-        let style = fonts::style_from_flags(self.text_bold, self.text_italic);
+        let style = style_from_flags(self.text_bold, self.text_italic);
         let Some(font) = self.fonts.load(&family, style) else {
             return;
         };
@@ -884,14 +933,23 @@ impl SelfPaintApp {
         let status_msg = self
             .status
             .as_ref()
-            .filter(|(_, t)| t.elapsed() < STATUS_TTL)
+            .filter(|(_, t)| {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    t.elapsed_wasm() < status_ttl()
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    t.elapsed() < status_ttl()
+                }
+            })
             .map(|(m, _)| m.clone());
 
         egui::Panel::bottom("selfpaint-status")
             .exact_size(28.0)
             .frame(
                 egui::Frame::NONE
-                    .fill(STATUS_BG)
+                    .fill(STATUS_BG())
                     .inner_margin(egui::Margin::symmetric(10, 4)),
             )
             .show(ui, |ui| {
@@ -900,11 +958,11 @@ impl SelfPaintApp {
                     ui.label(
                         RichText::new(format!("{w} × {h} px"))
                             .size(12.0)
-                            .color(TEXT),
+                            .color(TEXT()),
                     );
                     if let Some(msg) = status_msg {
                         ui.separator();
-                        ui.label(RichText::new(msg).size(12.0).color(TEXT_MUTED));
+                        ui.label(RichText::new(msg).size(12.0).color(TEXT_MUTED()));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         fit_clicked = ui.small_button(self.l10n.fit).clicked();
@@ -924,7 +982,7 @@ impl SelfPaintApp {
                         if ui.small_button("−").clicked() {
                             self.view.set_zoom(self.view.zoom / 1.25);
                         }
-                        ui.label(RichText::new(self.l10n.zoom).size(12.0).color(TEXT_MUTED));
+                        ui.label(RichText::new(self.l10n.zoom).size(12.0).color(TEXT_MUTED()));
                     });
                 });
                 if fit_clicked {
@@ -1010,7 +1068,7 @@ impl SelfPaintApp {
                 ui.label(
                     RichText::new(self.l10n.language)
                         .size(13.0)
-                        .color(TEXT_MUTED),
+                        .color(TEXT_MUTED()),
                 );
                 ui.horizontal(|ui| {
                     let pt = ui.selectable_label(self.lang == Lang::Pt, "Português");
@@ -1026,6 +1084,59 @@ impl SelfPaintApp {
                         self.persist(|p| p.general.language = "en".into());
                     }
                 });
+                ui.separator();
+                ui.label(RichText::new(self.l10n.theme).size(13.0).color(TEXT_MUTED()));
+                ui.horizontal(|ui| {
+                    let light = ui.selectable_label(
+                        self.settings.get().general.theme == "light",
+                        self.l10n.theme_light,
+                    );
+                    let dark = ui.selectable_label(
+                        self.settings.get().general.theme == "dark",
+                        self.l10n.theme_dark,
+                    );
+                    let gray = ui.selectable_label(
+                        self.settings.get().general.theme == "gray",
+                        self.l10n.theme_gray,
+                    );
+                    let black = ui.selectable_label(
+                        self.settings.get().general.theme == "black",
+                        self.l10n.theme_black,
+                    );
+                    if light.clicked() && self.settings.get().general.theme != "light" {
+                        self.persist(|p| p.general.theme = "light".into());
+                        self.apply_visuals(ui.ctx());
+                    }
+                    if dark.clicked() && self.settings.get().general.theme != "dark" {
+                        self.persist(|p| p.general.theme = "dark".into());
+                        self.apply_visuals(ui.ctx());
+                    }
+                    if gray.clicked() && self.settings.get().general.theme != "gray" {
+                        self.persist(|p| p.general.theme = "gray".into());
+                        self.apply_visuals(ui.ctx());
+                    }
+                    if black.clicked() && self.settings.get().general.theme != "black" {
+                        self.persist(|p| p.general.theme = "black".into());
+                        self.apply_visuals(ui.ctx());
+                    }
+                    // Breeze themes
+                    let breeze_light = ui.selectable_label(
+                        self.settings.get().general.theme == "breeze-light",
+                        self.l10n.theme_breeze_light,
+                    );
+                    let breeze_dark = ui.selectable_label(
+                        self.settings.get().general.theme == "breeze-dark",
+                        self.l10n.theme_breeze_dark,
+                    );
+                    if breeze_light.clicked() && self.settings.get().general.theme != "breeze-light" {
+                        self.persist(|p| p.general.theme = "breeze-light".into());
+                        self.apply_visuals(ui.ctx());
+                    }
+                    if breeze_dark.clicked() && self.settings.get().general.theme != "breeze-dark" {
+                        self.persist(|p| p.general.theme = "breeze-dark".into());
+                        self.apply_visuals(ui.ctx());
+                    }
+                });
             });
         self.show_settings = open;
     }
@@ -1037,14 +1148,23 @@ impl SelfPaintApp {
         let (splash_rect, response) = ui.allocate_exact_size(rect.size(), Sense::click());
         let painter = ui.painter_at(splash_rect);
 
-        // Dim the app behind the splash.
-        painter.rect_filled(splash_rect, 0.0, Color32::from_black_alpha(180));
+        // Dim the app behind the splash.\n        // Use light theme background color\n        painter.rect_filled(splash_rect, 0.0, Color32::from_rgb(0xEE, 0xEE, 0xEE));
 
         let center = splash_rect.center();
         let name = self.l10n.splash_name;
         let desc = self.l10n.splash_desc;
-        let hint = self.l10n.splash_hint;
-        let start = self.l10n.splash_start;
+        let hint = self.l10n.start_subtitle;
+        let start = self.l10n.new_file;
+
+        // Calculate button vertical spacing based on available height to avoid going off-screen
+        let available_height = splash_rect.height();
+        let button_height = 36.0_f32;
+        let button_count = 3.0_f32; // start, open, settings
+        let total_buttons_height = button_count * button_height + (button_count - 1.0_f32) * 10.0_f32;
+        let max_top_offset = available_height / 2.0_f32 - total_buttons_height / 2.0_f32;
+        let start_offset = 40.0_f32.min(max_top_offset.max(20.0_f32));
+        let open_offset = start_offset + button_height + 10.0;
+        let settings_offset = open_offset + button_height + 10.0;
 
         // App name.
         painter.text(
@@ -1052,7 +1172,7 @@ impl SelfPaintApp {
             egui::Align2::CENTER_CENTER,
             name,
             FontId::proportional(52.0),
-            TEXT,
+            TEXT(),
         );
         // Description.
         painter.text(
@@ -1060,18 +1180,18 @@ impl SelfPaintApp {
             egui::Align2::CENTER_CENTER,
             desc,
             FontId::proportional(16.0),
-            TEXT_MUTED,
+            TEXT_MUTED(),
         );
 
         // "Start painting" button.
         let btn_size = Vec2::new(200.0, 36.0);
-        let btn_rect = Rect::from_center_size(center + Vec2::new(0.0, 50.0), btn_size);
+        let btn_rect = Rect::from_center_size(center + Vec2::new(0.0, start_offset), btn_size);
         let btn_id = ui.id().with("selfpaint-splash-start");
         let btn_resp = ui.interact(btn_rect, btn_id, Sense::click());
         let btn_fill = if btn_resp.hovered() {
-            ACCENT_HOVER
+            ACCENT_HOVER()
         } else {
-            ACCENT
+            ACCENT()
         };
         painter.rect_filled(btn_rect, 6.0, btn_fill);
         painter.text(
@@ -1081,6 +1201,26 @@ impl SelfPaintApp {
             FontId::proportional(15.0),
             Color32::WHITE,
         );
+
+        // Open and Settings buttons.
+        let open_rect = Rect::from_center_size(center + Vec2::new(0.0, open_offset), Vec2::new(200.0, 30.0));
+        let settings_rect = Rect::from_center_size(center + Vec2::new(0.0, settings_offset), Vec2::new(200.0, 30.0));
+        let open_resp = ui.interact(open_rect, ui.id().with("splash-open"), Sense::click());
+        let settings_resp = ui.interact(settings_rect, ui.id().with("splash-settings"), Sense::click());
+        for (r, label, hovered) in [
+            (open_rect, self.l10n.open, open_resp.hovered()),
+            (settings_rect, self.l10n.settings_title, settings_resp.hovered()),
+        ] {
+            painter.rect_filled(r, 6.0, if hovered { ACCENT_HOVER() } else { CHROME_BG() });
+            painter.text(r.center(), egui::Align2::CENTER_CENTER, label, FontId::proportional(13.0), TEXT());
+        }
+        if open_resp.clicked() {
+            self.spawn_open();
+            self.show_splash = false;
+        }
+        if settings_resp.clicked() {
+            self.show_settings = true;
+        }
 
         // Hint at the bottom.
         painter.text(
@@ -1108,19 +1248,40 @@ impl SelfPaintApp {
     }
 }
 
+impl Default for SelfPaintApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl eframe::App for SelfPaintApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.show_splash {
+            self.show_splash_screen(ui);
+            self.show_settings_dialog(ui.ctx());
+            return;
+        }
+        // Custom titlebar
+        crate::titlebar::show(ui, &self.l10n.untitled);
+        crate::titlebar::resize_borders(ui.ctx());
+
         self.poll_file_results(ui.ctx());
         self.handle_shortcuts(ui);
 
+        #[cfg(not(target_arch = "wasm32"))]
         let tick = self.settings.tick(Instant::now());
-        if let SaveStatus::Failed(_err) = &tick.status {
-            // The store keeps retrying; nothing to show here.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let SaveStatus::Failed(_err) = &tick.status {
+                // The store keeps retrying; nothing to show here.
+            }
+            if let Some(deadline) = tick.next_deadline {
+                ui.ctx()
+                    .request_repaint_after(deadline.saturating_duration_since(Instant::now()));
+            }
         }
-        if let Some(deadline) = tick.next_deadline {
-            ui.ctx()
-                .request_repaint_after(deadline.saturating_duration_since(Instant::now()));
-        }
+        #[cfg(target_arch = "wasm32")]
+        let _tick = self.settings.tick(Instant::now());
 
         let l10n = self.l10n.clone();
         let mut events = Vec::new();
@@ -1143,7 +1304,7 @@ impl eframe::App for SelfPaintApp {
             let ribbon = egui::Panel::top("selfpaint-ribbon")
                 .frame(
                     egui::Frame::NONE
-                        .fill(CHROME_BG)
+                        .fill(CHROME_BG())
                         .inner_margin(egui::Margin::symmetric(4, 6)),
                 )
                 .show(ui, |ui| {
@@ -1152,7 +1313,7 @@ impl eframe::App for SelfPaintApp {
             ui.painter().hline(
                 ribbon.response.rect.x_range(),
                 ribbon.response.rect.bottom(),
-                Stroke::new(1.0, BORDER),
+                Stroke::new(1.0, BORDER()),
             );
         }
 
@@ -1196,14 +1357,14 @@ impl eframe::App for SelfPaintApp {
                 RibbonEvent::SaveProject => self.spawn_save_project(),
                 RibbonEvent::Undo => self.undo(),
                 RibbonEvent::Redo => self.redo(),
-                RibbonEvent::OpenSettings => self.show_settings = true,
+                // RibbonEvent::Settings removed - use start screen settings
             }
         }
 
         self.show_status_bar(ui);
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(CANVAS_BG))
+            .frame(egui::Frame::NONE.fill(CANVAS_BG()))
             .show(ui, |ui| {
                 self.show_canvas(ui);
             });
@@ -1216,14 +1377,23 @@ impl eframe::App for SelfPaintApp {
         }
 
         if let Some((_, t)) = &self.status
-            && t.elapsed() > STATUS_TTL
+            && {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    t.elapsed_wasm() > status_ttl()
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    t.elapsed() > status_ttl()
+                }
+            }
         {
             self.status = None;
         }
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        let c = crate::palette::WINDOW_BG;
+        let c = crate::palette::WINDOW_BG();
         [
             c.r() as f32 / 255.0,
             c.g() as f32 / 255.0,
@@ -1232,7 +1402,15 @@ impl eframe::App for SelfPaintApp {
         ]
     }
 
-    fn on_exit(&mut self) {
+fn on_exit(&mut self) {
+        // Save window state
+        self.egui_ctx.viewport(|vp| {
+            let mut prefs = self.settings.get().clone();
+            prefs.view.maximized = vp.builder.maximized.unwrap_or(false);
+            prefs.view.position = vp.builder.position;
+            prefs.view.size = vp.builder.inner_size;
+            self.settings.update(move |p| p.view = prefs.view);
+        });
         let _ = self.settings.flush();
     }
 }
